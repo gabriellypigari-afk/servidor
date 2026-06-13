@@ -1104,20 +1104,56 @@ client.on('interactionCreate', async interaction => {
             if (acao === 'aprovar') {
                 const cargoId = dadosFicha.cargoId;
                 const tagCargo = PREFIXOS[cargoId] || "";
+                const novoApelido = `${tagCargo} ${dadosFicha.nome} | ${dadosFicha.id}`;
 
                 await membroCandidato.roles.add(cargoId);
-                await membroCandidato.setNickname(`${tagCargo} ${dadosFicha.nome} | ${dadosFicha.id}`).catch(() => {});
+                
+                let apelidoStatus = '✅ Apelido definido';
+                try {
+                    await membroCandidato.setNickname(novoApelido);
+                } catch (err) {
+                    console.error('Erro ao definir apelido:', err.message);
+                    apelidoStatus = '⚠️ Não foi possível alterar o apelido (verifique se o cargo do bot está acima do cargo do membro)';
+                }
 
-                await interaction.update({
-                    content: `✅ **Ficha Aprovada por ${interaction.user.tag}!**\nO membro ${membroCandidato.toString()} foi registrado como <@&${cargoId}>.`,
-                    components: [], embeds: []
-                });
+                const embedAprovado = new EmbedBuilder()
+                    .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                    .setTitle("✅ Ficha Aprovada")
+                    .setColor("#2ecc71")
+                    .addFields(
+                        { name: "👤 Membro", value: membroCandidato.toString(), inline: true },
+                        { name: "🛡️ Aprovado por", value: interaction.user.toString(), inline: true },
+                        { name: "\u200B", value: "\u200B", inline: false },
+                        { name: "📝 Nome", value: dadosFicha.nome, inline: true },
+                        { name: "🆔 ID / Passaporte", value: dadosFicha.id, inline: true },
+                        { name: "📞 Telefone", value: dadosFicha.telefone, inline: true },
+                        { name: "📋 Cargo", value: dadosFicha.cargoNome, inline: true },
+                        { name: "🏷️ Apelido", value: `\`${novoApelido}\``, inline: true },
+                        { name: "📌 Status", value: apelidoStatus, inline: false }
+                    )
+                    .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                    .setTimestamp();
+
+                await interaction.update({ embeds: [embedAprovado], components: [] });
                 await atualizarQuadroFuncionarios(interaction.guild);
             } else {
-                await interaction.update({
-                    content: `🔴 **Ficha Rejeitada por ${interaction.user.tag}.** O cadastro foi recusado.`,
-                    components: [], embeds: []
-                });
+                const embedRejeitado = new EmbedBuilder()
+                    .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                    .setTitle("🔴 Ficha Rejeitada")
+                    .setColor("#e74c3c")
+                    .addFields(
+                        { name: "👤 Membro", value: membroCandidato.toString(), inline: true },
+                        { name: "🛡️ Rejeitado por", value: interaction.user.toString(), inline: true },
+                        { name: "\u200B", value: "\u200B", inline: false },
+                        { name: "📝 Nome", value: dadosFicha.nome, inline: true },
+                        { name: "🆔 ID / Passaporte", value: dadosFicha.id, inline: true },
+                        { name: "📞 Telefone", value: dadosFicha.telefone, inline: true },
+                        { name: "📋 Cargo Solicitado", value: dadosFicha.cargoNome, inline: true }
+                    )
+                    .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                    .setTimestamp();
+
+                await interaction.update({ embeds: [embedRejeitado], components: [] });
             }
             return fichasPendentes.delete(usuarioId);
         }
