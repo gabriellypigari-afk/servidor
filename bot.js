@@ -1107,6 +1107,7 @@ client.on('interactionCreate', async interaction => {
                 const novoApelido = `${tagCargo} ${dadosFicha.nome} | ${dadosFicha.id}`;
 
                 await membroCandidato.roles.add(cargoId);
+                await membroCandidato.roles.add(CARGOS.PACIENTE).catch(() => {});
                 
                 let apelidoStatus = '✅ Apelido definido';
                 try {
