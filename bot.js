@@ -1048,6 +1048,7 @@ client.on('interactionCreate', async interaction => {
                     .setPlaceholder('Escolha seu cargo...')
                     .addOptions([
                         { label: 'Paciente', value: 'paciente', description: 'Registro como Paciente (aprovação imediata)', emoji: '🏥' },
+                        { label: 'Estagiário', value: 'estagiario', description: 'Registro como Estagiário (requer aprovação)', emoji: '📚' },
                         { label: 'Jurídico', value: 'juridico', description: 'Registro como Jurídico (requer aprovação)', emoji: '⚖️' },
                         { label: 'Polícia', value: 'policia', description: 'Registro como Polícia (requer aprovação)', emoji: '🚔' }
                     ])
@@ -1330,11 +1331,13 @@ client.on('interactionCreate', async interaction => {
 
             const mapaCargoId = {
                 'paciente': CARGOS.PACIENTE,
+                'estagiario': CARGOS.ESTAGIARIO,
                 'juridico': CARGOS.JURIDICO,
                 'policia': CARGOS.POLICIA
             };
             const mapaCargoNome = {
                 'paciente': '🏥 Paciente',
+                'estagiario': '📚 Estagiário',
                 'juridico': '⚖️ Jurídico',
                 'policia': '🚔 Polícia'
             };
