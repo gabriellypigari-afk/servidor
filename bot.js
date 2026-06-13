@@ -33,7 +33,9 @@ const {
     RoleSelectMenuBuilder, 
     REST, 
     Routes, 
-    PermissionFlagsBits
+    PermissionFlagsBits,
+    AttachmentBuilder,
+    ChannelType
 } = require('discord.js');
 
 const client = new Client({
@@ -48,6 +50,12 @@ const client = new Client({
 // ==========================================
 // 2. CONFIGURAÇÕES DOS CARGOS E CANAIS (IDs)
 // ==========================================
+// 🖼️ CONFIGURAÇÕES DO SERVIDOR (configurável via /config)
+let configServidor = {
+    logo: null,
+    cor: '#ff0000',
+    nome: 'Hospital - Paulista'
+};
 const CARGOS = {
     PACIENTE: "1510312501886320690",
     ESTAGIARIO: "1510312481665585232",
@@ -73,7 +81,14 @@ const CARGOS = {
     // 🧠 NOVOS CARGOS DA HIERARQUIA DE PSICOLOGIA
     AUXILIAR_PSICOLOGIA: "1514341412450205716",
     SUPERVISOR_PSICOLOGIA: "1514341657448026233",
-    COORDENADOR_PSICOLOGIA: "1514341841439555674"
+    COORDENADOR_PSICOLOGIA: "1514341841439555674",
+
+    // 🚑 CHEFE DO SAMU (chefia dos paramédicos)
+    CHEFE_SAMU: "1514465218518843412",
+
+    // ⚖️ SISTEMA DE REGISTRO
+    JURIDICO: "1510312483666264154",
+    POLICIA: "1510312484446408735"
 };
 
 const ID_DIRETOR_GERAL = CARGOS.DIRETOR_GERAL; 
@@ -103,6 +118,7 @@ const ORDEM_CARGOS = [
     CARGOS.SUPERVISOR_PSICOLOGIA,
     CARGOS.COORDENADOR_PSICOLOGIA,
     CARGOS.CHEFE_PSICOLOGIA,
+    CARGOS.CHEFE_SAMU,
     CARGOS.CIRURGIAO,
     CARGOS.CHEFE_PEDIATRIA,
     CARGOS.CHEFE_OBSTETRICIA,
@@ -129,6 +145,9 @@ const PREFIXOS = {
     [CARGOS.SUPERVISOR_PSICOLOGIA]: "{SupPsi}",
     [CARGOS.COORDENADOR_PSICOLOGIA]: "{CooPsi}",
     [CARGOS.CHEFE_PSICOLOGIA]: "{ChPsi}",
+    [CARGOS.CHEFE_SAMU]: "{ChSamu}",
+    [CARGOS.JURIDICO]: "{Jur}",
+    [CARGOS.POLICIA]: "{Policia}",
     [CARGOS.CIRURGIAO]: "{Cir}",
     [CARGOS.CHEFE_PEDIATRIA]: "{ChPed}",
     [CARGOS.CHEFE_OBSTETRICIA]: "{ChObs}",
@@ -147,21 +166,42 @@ let permissoesRH = {
     promover: null, rebaixar: null, advertir: null, exonerar: null, fichas: null
 };
 
-const pontosAtivos = new Map(); 
+// pontosAtivos: userId -> { entrada: timestamp, pausas: [{inicio, fim}], pausaAtual: timestamp|null, totalPausado: ms }
+const pontosAtivos = new Map();
 const fichasPendentes = new Map(); 
 const advertenciasBanco = new Map(); 
+
+// 📊 HISTÓRICO DE PONTO DETALHADO
+// historicoPonto: userId -> [{ entrada, saida, duracao (min), pausas (min), data }]
+const historicoPonto = new Map();
+
+// 🎫 SISTEMA DE TICKETS
+let ticketConfig = {
+    categorias: [
+        { label: 'Ouvidoria', descricao: 'Reclamações, sugestões e elogios', emoji: '📢' },
+        { label: 'Consulta Médica', descricao: 'Agendar ou solicitar consulta', emoji: '🩺' },
+        { label: 'Emergência', descricao: 'Atendimento de urgência', emoji: '🚑' },
+        { label: 'Recrutamento', descricao: 'Processos seletivos e vagas', emoji: '📋' },
+        { label: 'Outros', descricao: 'Assuntos gerais', emoji: '📝' }
+    ],
+    canalLogs: null,
+    cargoSuporte: null,
+    titulo: 'Atendimento Hospital • Neon Roleplay',
+    contadorTickets: 0
+};
+const ticketsAtivos = new Map();
+
+// 📊 RANKING DE PONTO
+const rankingPonto = new Map(); // userId -> { minutos: number, nome: string }
+let pontoResetConfig = {
+    modo: null, // 'semanal' ou 'mensal' ou null (manual)
+    ultimoReset: Date.now()
+};
 
 // ==========================================
 // 4. REGISTRO DE COMANDOS SLASH (/)
 // ==========================================
 const comandos = [
-    {
-        name: 'hierarquiapsicologia',
-        description: 'Atualiza o quadro de hierarquia da Psicologia',
-        options: [
-            { name: 'canal', type: 7, description: 'Canal onde a hierarquia da Psicologia sera enviada', required: false }
-        ]
-    },
     { 
         name: 'setar_apelido', 
         description: '📝 Altera o apelido do membro no padrão: {TAG} Nome | ID', 
@@ -174,7 +214,7 @@ const comandos = [
     },
     { name: 'config_rh', description: '⚙️ Abre o painel de configuração de permissões de RH' },
     { name: 'painel_entrada', description: '🏥 Envia o painel de registro/recepção no canal atual' },
-    { name: 'painel_ponto', description: '⏱️ Envia o painel de registro de ponto eletrônico' },
+    { name: 'ponto', description: '⏱️ Envia o painel de bate-ponto no canal atual' },
     { name: 'atualizar', description: '📊 Força a atualização manual imediata de todos os quadros de hierarquia' },
     { 
         name: 'promover', 
@@ -195,7 +235,57 @@ const comandos = [
     { name: 'exonerar', description: '❌ Demite um funcionário, limpando sua ficha e cargos', options: [{ name: 'membro', type: 6, description: 'Membro a ser demitido', required: true }] },
     { name: 'advertir', description: '⚠️ Aplica uma advertência formal a um funcionário', options: [{ name: 'membro', type: 6, description: 'Funcionário', required: true }, { name: 'motivo', type: 3, description: 'Motivo', required: true }] },
     { name: 'advertencias', description: '🔍 Consulta o histórico de advertências de um funcionário', options: [{ name: 'membro', type: 6, description: 'Funcionário', required: true }] },
-    { name: 'embed', description: '📢 Envia uma mensagem personalizada (Embed)', options: [{ name: 'titulo', type: 3, description: 'Título', required: true }, { name: 'descricao', type: 3, description: 'Texto', required: true }, { name: 'cor', type: 3, description: 'Cor em HEX', required: false }] }
+    { name: 'embed', description: '📢 Envia uma mensagem personalizada (Embed)', options: [{ name: 'titulo', type: 3, description: 'Título', required: true }, { name: 'descricao', type: 3, description: 'Texto', required: true }, { name: 'cor', type: 3, description: 'Cor em HEX', required: false }] },
+    {
+        name: 'config',
+        description: '⚙️ Configura o logo, nome e cor do servidor nos painéis',
+        options: [
+            { name: 'logo', type: 3, description: 'URL da imagem do logo (cole o link da imagem do Discord)', required: false },
+            { name: 'nome', type: 3, description: 'Nome do servidor (ex: Hospital - Paulista)', required: false },
+            { name: 'cor', type: 3, description: 'Cor em HEX (ex: #ff0000)', required: false }
+        ]
+    },
+    { name: 'set', description: '📋 Envia o painel do Sistema de Registro no canal atual' },
+    { name: 'ticket', description: '🎫 Envia o painel de tickets/atendimento no canal atual' },
+    { 
+        name: 'ticket_config', 
+        description: '⚙️ Configura o sistema de tickets (logs, cargo suporte, título)',
+        options: [
+            { name: 'logs', type: 7, description: 'Canal para logs de tickets', required: false },
+            { name: 'cargo_suporte', type: 8, description: 'Cargo da equipe de suporte', required: false },
+            { name: 'titulo', type: 3, description: 'Título do painel de tickets', required: false }
+        ]
+    },
+    {
+        name: 'ticket_categoria',
+        description: '📂 Adiciona uma categoria ao sistema de tickets',
+        options: [
+            { name: 'nome', type: 3, description: 'Nome da categoria', required: true },
+            { name: 'descricao', type: 3, description: 'Descrição da categoria', required: true },
+            { name: 'emoji', type: 3, description: 'Emoji da categoria (ex: 📢)', required: false }
+        ]
+    },
+    { name: 'ticket_remover_categoria', description: '🗑️ Remove uma categoria do sistema de tickets (menu de seleção)' },
+    { name: 'ponto_ranking', description: '📊 Exibe o ranking de horas trabalhadas no bate-ponto' },
+    { name: 'ponto_relatorio', description: '📋 Exibe seu relatório individual de ponto (horas da semana e do mês)' },
+    { 
+        name: 'ponto_reset', 
+        description: '🔄 Reseta o ranking de ponto (todos ou um membro específico)',
+        options: [
+            { name: 'membro', type: 6, description: 'Membro específico para resetar (deixe vazio para resetar todos)', required: false }
+        ]
+    },
+    {
+        name: 'ponto_config',
+        description: '⚙️ Configura o reset automático do ranking (semanal/mensal/manual)',
+        options: [
+            { name: 'modo', type: 3, description: 'Modo de reset automático', required: true, choices: [
+                { name: 'Semanal (toda segunda-feira)', value: 'semanal' },
+                { name: 'Mensal (todo dia 1)', value: 'mensal' },
+                { name: 'Manual (só com /ponto_reset)', value: 'manual' }
+            ]}
+        ]
+    }
 ];
 
 // ==========================================
@@ -218,6 +308,7 @@ client.once('ready', async () => {
     // ⏱️ TIMER AUTOMÁTICO: Atualiza as duas hierarquias a cada 5 segundos
     for (const guild of client.guilds.cache.values()) {
         try {
+            await guild.members.fetch();
             await atualizarQuadroFuncionarios(guild);
             await atualizarQuadroPsicologia(guild);
         } catch (err) {
@@ -225,16 +316,38 @@ client.once('ready', async () => {
         }
     }
 
-    setInterval(() => {
-        client.guilds.cache.forEach(async (guild) => {
+    setInterval(async () => {
+        for (const guild of client.guilds.cache.values()) {
             try {
+                await guild.members.fetch();
                 await atualizarQuadroFuncionarios(guild);
                 await atualizarQuadroPsicologia(guild);
             } catch (err) {
                 console.error("Erro na varredura automática de quadros:", err);
             }
-        });
-    }, 60000);
+        }
+
+        // Auto-reset do ranking de ponto
+        if (pontoResetConfig.modo) {
+            const agora = new Date();
+            const ultimo = new Date(pontoResetConfig.ultimoReset);
+            let resetar = false;
+
+            if (pontoResetConfig.modo === 'semanal' && agora.getDay() === 1) {
+                if (ultimo.toDateString() !== agora.toDateString()) resetar = true;
+            }
+            if (pontoResetConfig.modo === 'mensal' && agora.getDate() === 1) {
+                if (ultimo.toDateString() !== agora.toDateString()) resetar = true;
+            }
+
+            if (resetar) {
+                rankingPonto.clear();
+                historicoPonto.clear();
+                pontoResetConfig.ultimoReset = Date.now();
+                console.log(`📊 Ranking de ponto resetado automaticamente (${pontoResetConfig.modo}).`);
+            }
+        }
+    }, 120000);
 });
 
 // ==========================================
@@ -243,24 +356,16 @@ client.once('ready', async () => {
 async function buscarCanalTexto(guild, canalId, nomeCanal) {
     const canal = guild.channels.cache.get(canalId) || await guild.channels.fetch(canalId).catch(() => null);
 
-    if (!canal) {
-        console.error(`Canal ${nomeCanal} nao encontrado. Confira o ID configurado: ${canalId}`);
-        return null;
-    }
+    if (!canal) return null;
 
-    if (typeof canal.isTextBased === 'function' && !canal.isTextBased()) {
-        console.error(`Canal ${nomeCanal} nao e um canal de texto: ${canalId}`);
-        return null;
-    }
+    if (typeof canal.isTextBased === 'function' && !canal.isTextBased()) return null;
 
     return canal;
 }
 
 async function atualizarQuadroFuncionarios(guild) {
     const canalQuadro = await buscarCanalTexto(guild, CANAIS.HIERARQUIA, 'HIERARQUIA');
-    if (!canalQuadro) return;
-
-    await guild.members.fetch(); 
+    if (!canalQuadro) return; 
 
     const embed = new EmbedBuilder()
         .setTitle("📊 QUADRO OFICIAL DE FUNCIONÁRIOS")
@@ -288,6 +393,7 @@ async function atualizarQuadroFuncionarios(guild) {
             nome: "🩺 CHEFIAS DE ESPECIALIDADES",
             cargos: [
                 { id: CARGOS.CHEFE_CIRURGIA, label: "🔪 Chefe de Cirurgia" },
+                { id: CARGOS.CHEFE_SAMU, label: "🚑 Chefe do SAMU" },
                 { id: CARGOS.CHEFE_PSICOLOGIA, label: "🧠 Chefe de Psicologia" },
                 { id: CARGOS.CHEFE_OBSTETRICIA, label: "🤰 Chefe de Obstetrícia" },
                 { id: CARGOS.CHEFE_PEDIATRIA, label: "👶 Chefe de Pediatria" }
@@ -367,47 +473,66 @@ async function atualizarQuadroFuncionarios(guild) {
 async function atualizarQuadroPsicologia(guild, canalDestino = null) {
     const canalPsi = canalDestino || await buscarCanalTexto(guild, CANAIS.HIERARQUIA_PSICOLOGIA, 'HIERARQUIA_PSICOLOGIA');
     if (!canalPsi) return;
-    if (typeof canalPsi.isTextBased === 'function' && !canalPsi.isTextBased()) {
-        throw new Error('O canal da hierarquia da Psicologia precisa ser um canal de texto.');
-    }
-
-    await guild.members.fetch(); 
+    if (typeof canalPsi.isTextBased === 'function' && !canalPsi.isTextBased()) return;
 
     const embed = new EmbedBuilder()
-        .setTitle("🧠 QUADRO DE HIERARQUIA — DEPARTAMENTO DE PSICOLOGIA")
-        .setDescription("Listagem oficializada, dinâmica e em tempo real de todo o corpo e sub-equipes de Psicologia Clínica.")
+        .setTitle("🧠 QUADRO OFICIAL — DEPARTAMENTO DE PSICOLOGIA")
+        .setDescription("Listagem dinâmica e em tempo real de todo o corpo profissional do Departamento de Psicologia Clínica.")
         .setColor("#9b59b6")
         .setTimestamp();
 
-    const cargosPsicologia = [
-        { id: CARGOS.CHEFE_PSICOLOGIA, label: "👑 Chefe de Psicologia" },
-        { id: CARGOS.COORDENADOR_PSICOLOGIA, label: "📋 Coordenador(a) da Psicologia" },
-        { id: CARGOS.SUPERVISOR_PSICOLOGIA, label: "📈 Supervisor(a) da Psicologia" },
-        { id: CARGOS.PSICOLOGO, label: "🧠 Psicólogo(a)" },
-        { id: CARGOS.AUXILIAR_PSICOLOGIA, label: "📝 Auxiliar da Psicologia" }
+    const categoriasPsicologia = [
+        {
+            nome: "👑 CHEFIA DA PSICOLOGIA",
+            cargos: [
+                { id: CARGOS.CHEFE_PSICOLOGIA, label: "👑 Chefe de Psicologia" }
+            ]
+        },
+        {
+            nome: "🛡️ GESTÃO & COORDENAÇÃO",
+            cargos: [
+                { id: CARGOS.COORDENADOR_PSICOLOGIA, label: "📋 Coordenador(a)" },
+                { id: CARGOS.SUPERVISOR_PSICOLOGIA, label: "📈 Supervisor(a)" }
+            ]
+        },
+        {
+            nome: "🧠 CORPO CLÍNICO",
+            cargos: [
+                { id: CARGOS.PSICOLOGO, label: "🧠 Psicólogo(a)" }
+            ]
+        },
+        {
+            nome: "📝 INICIAÇÃO",
+            cargos: [
+                { id: CARGOS.AUXILIAR_PSICOLOGIA, label: "📝 Auxiliar da Psicologia" }
+            ]
+        }
     ];
 
     let totalPsicologia = 0;
 
-    for (const itemCargo of cargosPsicologia) {
-        const cargoObj = guild.roles.cache.get(itemCargo.id);
-        if (!cargoObj) {
-            console.error(`Cargo da hierarquia de psicologia nao encontrado: ${itemCargo.label} (${itemCargo.id})`);
-            continue;
-        }
-
-        const membrosFiltrados = guild.members.cache.filter(m => m.roles.cache.has(itemCargo.id)).map(m => `↳ ${m.toString()}`);
-        const totalNoCargo = membrosFiltrados.length;
-        totalPsicologia += totalNoCargo;
-
+    for (const categoria of categoriasPsicologia) {
         let conteudoDaCategoria = "";
-        if (totalNoCargo > 0) {
-            conteudoDaCategoria += membrosFiltrados.join('\n') + '\n\n';
-        } else {
-            conteudoDaCategoria += `↳ Cargo Vago\n\n`;
+
+        for (const itemCargo of categoria.cargos) {
+            const cargoObj = guild.roles.cache.get(itemCargo.id);
+            if (!cargoObj) continue;
+
+            const membrosFiltrados = guild.members.cache.filter(m => m.roles.cache.has(itemCargo.id)).map(m => `↳ ${m.toString()}`);
+            const totalNoCargo = membrosFiltrados.length;
+            totalPsicologia += totalNoCargo;
+
+            conteudoDaCategoria += `**${cargoObj.toString()}** [${totalNoCargo}]\n`;
+            if (totalNoCargo > 0) {
+                conteudoDaCategoria += membrosFiltrados.join('\n') + '\n\n';
+            } else {
+                conteudoDaCategoria += `↳ Cargo Vago\n\n`;
+            }
         }
 
-        embed.addFields({ name: `${cargoObj.toString()} [${totalNoCargo}]`, value: conteudoDaCategoria, inline: false });
+        if (conteudoDaCategoria.trim().length > 0) {
+            embed.addFields({ name: categoria.nome, value: conteudoDaCategoria, inline: false });
+        }
     }
 
     embed.setFooter({ text: `🧠 Total de Profissionais na Psicologia: ${totalPsicologia}` });
@@ -426,7 +551,8 @@ async function atualizarQuadroPsicologia(guild, canalDestino = null) {
 // 7. GERENCIADOR DE EVENTOS E INTERAÇÕES
 // ==========================================
 client.on('interactionCreate', async interaction => {
-    
+    try {
+
     function verificarPermissaoRH(funcao) {
         const cargoPermitidoId = permissoesRH[funcao];
         const eDiretorGeral = interaction.member.roles.cache.has(ID_DIRETOR_GERAL);
@@ -472,24 +598,14 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: "❌ Apenas a **Direção Geral** ou Administradores podem gerenciar o quadro de hierarquia.", ephemeral: true });
             }
             await interaction.deferReply({ ephemeral: true });
-            await atualizarQuadroFuncionarios(interaction.guild);
-            await atualizarQuadroPsicologia(interaction.guild);
-            return interaction.editReply({ content: "✅ Sincronização e atualização de todos os quadros forçada com sucesso!" });
-        }
-
-        if (commandName === 'hierarquiapsicologia') {
-            if (!interaction.member.roles.cache.has(ID_DIRETOR_GERAL) && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: "Apenas a Direcao Geral ou Administradores podem atualizar a hierarquia da Psicologia.", ephemeral: true });
-            }
-
-            await interaction.deferReply({ ephemeral: true });
-            const canalEscolhido = options.getChannel('canal') || interaction.channel;
             try {
-                await atualizarQuadroPsicologia(interaction.guild, canalEscolhido);
-                return interaction.editReply({ content: `Hierarquia da Psicologia atualizada em ${canalEscolhido.toString()}.` });
+                await interaction.guild.members.fetch();
+                await atualizarQuadroFuncionarios(interaction.guild);
+                await atualizarQuadroPsicologia(interaction.guild);
+                return interaction.editReply({ content: "✅ Todos os quadros de hierarquia foram atualizados com sucesso!" });
             } catch (error) {
-                console.error('Erro ao atualizar hierarquia da Psicologia:', error);
-                return interaction.editReply({ content: `Nao consegui enviar a hierarquia em ${canalEscolhido.toString()}. Verifique se e um canal de texto e se o bot tem permissao para ver, enviar e editar mensagens.` });
+                console.error("Erro ao atualizar quadros:", error);
+                return interaction.editReply({ content: `⚠️ Erro: ${error.message}` });
             }
         }
 
@@ -521,27 +637,56 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'painel_entrada') {
             const embed = new EmbedBuilder()
-                .setTitle("Central de Recepção & Triagem")
-                .setDescription("Seja muito bem-vindo à nossa unidade! Para dar início aos seus atendimentos ou registrar a sua entrada na equipe profissional, clique abaixo para preencher sua ficha.")
-                .setColor("#0099ff");
+                .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                .setTitle("🏥 Central de Recepção & Triagem")
+                .setDescription(`Seja muito bem-vindo(a) ao **${configServidor.nome}**!\n\nPara dar início aos seus atendimentos ou registrar a sua entrada na equipe profissional, clique no botão abaixo para preencher sua ficha.\n\n━━━━━━━━━━━━━━━━━━━━━━\n📋 Preencha todos os campos com atenção.\n⏳ Aguarde a análise da equipe de RH.\n✅ Você será notificado sobre o resultado.\n━━━━━━━━━━━━━━━━━━━━━━`)
+                .setColor(configServidor.cor)
+                .setThumbnail(configServidor.logo || undefined)
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
 
             const botao = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('btn_abrir_ficha').setLabel('📝 Solicitar Registro / Ficha').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('btn_abrir_ficha').setLabel('Solicitar Registro / Ficha').setStyle(ButtonStyle.Danger).setEmoji('📝')
             );
 
             await interaction.reply({ content: "✅ Painel de entrada enviado.", ephemeral: true });
             return interaction.channel.send({ embeds: [embed], components: [botao] });
         }
 
-        if (commandName === 'painel_ponto') {
+        if (commandName === 'set') {
             const embed = new EmbedBuilder()
-                .setTitle("⏱️ Registro Eletrônico de Ponto")
-                .setDescription("Funcionário, utilize este terminal digital para computar o início e o encerramento do seu turno.")
-                .setColor("#ffff00");
+                .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                .setTitle("📋 Sistema de Registro")
+                .setDescription(`Este é o **menu para a equipe** que concede o acesso para utilizar todas as funções relacionadas à equipe dentro do bot.\n\n━━━━━━━━━━━━━━━━━━━━━━\nℹ️ Caso você ainda não possua um registro, clique no botão \'Registrar-se\' para ser incluído dentro de nossa equipe.\n━━━━━━━━━━━━━━━━━━━━━━`)
+                .setColor(configServidor.cor)
+                .setThumbnail(configServidor.logo || undefined)
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
 
             const botoes = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('ponto_entrar').setLabel('🟢 Entrar em Serviço').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('ponto_sair').setLabel('🔴 Sair de Serviço').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('set_registrar').setLabel('Registrar-se').setStyle(ButtonStyle.Danger).setEmoji('👤'),
+                new ButtonBuilder().setCustomId('set_perfil').setLabel('Perfil').setStyle(ButtonStyle.Secondary).setEmoji('👤')
+            );
+
+            await interaction.reply({ content: "✅ Painel de registro enviado.", ephemeral: true });
+            return interaction.channel.send({ embeds: [embed], components: [botoes] });
+        }
+
+        if (commandName === 'ponto') {
+            const embed = new EmbedBuilder()
+                .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                .setTitle("⏱️ Registro Eletrônico de Ponto")
+                .setDescription(`Funcionário, utilize este terminal digital para registrar sua jornada de trabalho.\n\n━━━━━━━━━━━━━━━━━━━━━━\n🟢 **Entrar** — Inicia seu turno de serviço\n⏸️ **Pausar** — Pausa o turno (almoço, intervalo)\n▶️ **Retomar** — Retoma o turno após pausa\n🔴 **Sair** — Encerra o turno e registra as horas\n━━━━━━━━━━━━━━━━━━━━━━\n⏳ O tempo de serviço e pausas será computado automaticamente.`)
+                .setColor(configServidor.cor)
+                .setThumbnail(configServidor.logo || undefined)
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
+
+            const botoes = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('ponto_entrar').setLabel('Entrar').setStyle(ButtonStyle.Success).setEmoji('🟢'),
+                new ButtonBuilder().setCustomId('ponto_pausar').setLabel('Pausar').setStyle(ButtonStyle.Primary).setEmoji('⏸️'),
+                new ButtonBuilder().setCustomId('ponto_retomar').setLabel('Retomar').setStyle(ButtonStyle.Primary).setEmoji('▶️'),
+                new ButtonBuilder().setCustomId('ponto_sair').setLabel('Sair').setStyle(ButtonStyle.Danger).setEmoji('🔴')
             );
 
             await interaction.reply({ content: "✅ Painel de Bate-ponto enviado.", ephemeral: true });
@@ -718,9 +863,482 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: "✅ Comunicado gerado.", ephemeral: true });
             return interaction.channel.send({ embeds: [embedCustom] });
         }
+
+        // ==========================================
+        // COMANDO /CONFIG
+        // ==========================================
+        if (commandName === 'config') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem configurar o servidor.", ephemeral: true });
+            }
+
+            const logo = options.getString('logo');
+            const nome = options.getString('nome');
+            const cor = options.getString('cor');
+
+            let resposta = "⚙️ **Configuração do servidor atualizada:**\n";
+            let mudou = false;
+
+            if (logo) { configServidor.logo = logo; resposta += `🖼️ Logo: [Imagem definida]\n`; mudou = true; }
+            if (nome) { configServidor.nome = nome; resposta += `📝 Nome: **${nome}**\n`; mudou = true; }
+            if (cor) { configServidor.cor = cor.startsWith('#') ? cor : `#${cor}`; resposta += `🎨 Cor: **${configServidor.cor}**\n`; mudou = true; }
+
+            if (!mudou) {
+                resposta = `⚙️ **Configuração atual:**\n🖼️ Logo: ${configServidor.logo ? '✅ Definido' : '❌ Não definido'}\n📝 Nome: **${configServidor.nome}**\n🎨 Cor: **${configServidor.cor}**`;
+            }
+
+            return interaction.reply({ content: resposta, ephemeral: true });
+        }
+
+        // ==========================================
+        // COMANDOS DE RANKING DE PONTO
+        // ==========================================
+        if (commandName === 'ponto_ranking') {
+            if (rankingPonto.size === 0) {
+                return interaction.reply({ content: "📊 Nenhum registro de ponto encontrado ainda.", ephemeral: true });
+            }
+
+            const ranking = [...rankingPonto.entries()]
+                .sort((a, b) => b[1].minutos - a[1].minutos)
+                .slice(0, 15);
+
+            const medalhas = ['🥇', '🥈', '🥉'];
+            let descricao = '';
+
+            ranking.forEach(([userId, dados], index) => {
+                const horas = Math.floor(dados.minutos / 60);
+                const mins = dados.minutos % 60;
+                const turnos = dados.turnos || 0;
+                const medalha = medalhas[index] || `**${index + 1}.**`;
+                descricao += `${medalha} <@${userId}> — **${horas}h ${mins}m** (${turnos} turnos)\n`;
+            });
+
+            const modoTexto = pontoResetConfig.modo === 'semanal' ? '🔄 Reset: Semanal (toda segunda)' : pontoResetConfig.modo === 'mensal' ? '🔄 Reset: Mensal (todo dia 1)' : '🔄 Reset: Manual';
+
+            const embed = new EmbedBuilder()
+                .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                .setTitle("📊 Ranking de Bate-Ponto")
+                .setDescription(`${descricao}\n━━━━━━━━━━━━━━━━━━━━━━\n${modoTexto}`)
+                .setColor(configServidor.cor)
+                .setThumbnail(configServidor.logo || undefined)
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed] });
+        }
+
+        if (commandName === 'ponto_relatorio') {
+            const userId = interaction.user.id;
+            const historico = historicoPonto.get(userId) || [];
+            const dadosRank = rankingPonto.get(userId);
+
+            const agora = new Date();
+            const inicioSemana = new Date(agora);
+            inicioSemana.setDate(agora.getDate() - agora.getDay());
+            inicioSemana.setHours(0, 0, 0, 0);
+
+            const inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1);
+
+            let minutosSemana = 0, turnosSemana = 0;
+            let minutosMes = 0, turnosMes = 0;
+
+            for (const reg of historico) {
+                const dataReg = new Date(reg.data);
+                if (dataReg >= inicioMes) {
+                    minutosMes += reg.duracao;
+                    turnosMes++;
+                }
+                if (dataReg >= inicioSemana) {
+                    minutosSemana += reg.duracao;
+                    turnosSemana++;
+                }
+            }
+
+            const formatTempo = (min) => `${Math.floor(min / 60)}h ${min % 60}m`;
+
+            const ultimosTurnos = historico.slice(-5).reverse().map((reg, i) => {
+                const data = new Date(reg.data).toLocaleDateString('pt-BR');
+                return `${i + 1}. ${data} — **${formatTempo(reg.duracao)}** (pausas: ${formatTempo(reg.pausas)})`;
+            }).join('\n') || 'Nenhum turno registrado.';
+
+            const statusAtual = pontosAtivos.has(userId) ? (pontosAtivos.get(userId).pausaAtual ? '⏸️ Pausado' : '🟢 Em serviço') : '⚪ Offline';
+
+            const embed = new EmbedBuilder()
+                .setAuthor({ name: configServidor.nome, iconURL: configServidor.logo || undefined })
+                .setTitle(`📋 Relatório de Ponto — ${interaction.user.tag}`)
+                .setDescription(`Status atual: **${statusAtual}**\n━━━━━━━━━━━━━━━━━━━━━━`)
+                .addFields(
+                    { name: '📅 Esta Semana', value: `⏱️ ${formatTempo(minutosSemana)}\n📋 ${turnosSemana} turnos`, inline: true },
+                    { name: '📆 Este Mês', value: `⏱️ ${formatTempo(minutosMes)}\n📋 ${turnosMes} turnos`, inline: true },
+                    { name: '📊 Total Acumulado', value: `⏱️ ${dadosRank ? formatTempo(dadosRank.minutos) : '0h 0m'}\n📋 ${dadosRank ? (dadosRank.turnos || 0) : 0} turnos`, inline: true },
+                    { name: '🕐 Últimos 5 Turnos', value: ultimosTurnos, inline: false }
+                )
+                .setColor(configServidor.cor)
+                .setThumbnail(interaction.user.displayAvatarURL())
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
+        if (commandName === 'ponto_reset') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem resetar o ranking.", ephemeral: true });
+            }
+
+            const membro = options.getMember('membro');
+
+            if (membro) {
+                rankingPonto.delete(membro.id);
+                historicoPonto.delete(membro.id);
+                return interaction.reply({ content: `🔄 Ponto de ${membro.toString()} foi resetado.`, ephemeral: true });
+            }
+
+            rankingPonto.clear();
+            historicoPonto.clear();
+            pontoResetConfig.ultimoReset = Date.now();
+            return interaction.reply({ content: "🔄 **Ranking de ponto resetado!** Todos os registros foram limpos.", ephemeral: true });
+        }
+
+        if (commandName === 'ponto_config') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem configurar o reset.", ephemeral: true });
+            }
+
+            const modo = options.getString('modo');
+            pontoResetConfig.modo = modo === 'manual' ? null : modo;
+
+            const textos = {
+                'semanal': '📊 Reset automático configurado para **toda segunda-feira**.',
+                'mensal': '📊 Reset automático configurado para **todo dia 1 do mês**.',
+                'manual': '📊 Reset automático **desativado**. Use `/reset_ponto` para resetar manualmente.'
+            };
+
+            return interaction.reply({ content: textos[modo], ephemeral: true });
+        }
+
+        // ==========================================
+        // COMANDO REMOVER CATEGORIA (com menu)
+        // ==========================================
+        if (commandName === 'ticket_remover_categoria') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem gerenciar categorias.", ephemeral: true });
+            }
+
+            if (ticketConfig.categorias.length === 0) {
+                return interaction.reply({ content: "❌ Nenhuma categoria para remover.", ephemeral: true });
+            }
+
+            const menuOpcoes = ticketConfig.categorias.map((cat, i) => ({
+                label: cat.label,
+                value: `remover_cat_${i}`,
+                description: cat.descricao,
+                emoji: cat.emoji || '📝'
+            }));
+
+            const menu = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('ticket_remover_cat_menu')
+                    .setPlaceholder('Escolha a categoria para remover...')
+                    .addOptions(menuOpcoes)
+            );
+
+            return interaction.reply({ content: "🗑️ Selecione a categoria que deseja remover:", components: [menu], ephemeral: true });
+        }
+
+        // ==========================================
+        // COMANDOS DE TICKETS
+        // ==========================================
+        if (commandName === 'ticket') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && !interaction.member.roles.cache.has(ID_DIRETOR_GERAL)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem enviar o painel de tickets.", ephemeral: true });
+            }
+
+            if (ticketConfig.categorias.length === 0) {
+                return interaction.reply({ content: "❌ Nenhuma categoria configurada. Use `/ticket_categoria` para adicionar.", ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+                .setAuthor({ name: `${ticketConfig.titulo}`, iconURL: configServidor.logo || undefined })
+                .setTitle(`ℹ️ Atendimento • ${configServidor.nome}`)
+                .setDescription(`Seja bem-vindo(a) ao sistema de atendimento do **${configServidor.nome}**.\nAtravés do atendimento, você pode falar diretamente com nossa equipe.\n\n━━━━━━━━━━━━━━━━━━━━━━\n📝 Forneça o motivo e o máximo de informações possível para agilizar seu atendimento.\n📋 Não chame membros da equipe no privado.\n⚠️ Iniciar um atendimento sem um motivo coerente poderá resultar em punições.\n━━━━━━━━━━━━━━━━━━━━━━`)
+                .setColor(configServidor.cor)
+                .setThumbnail(configServidor.logo || undefined)
+                .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                .setTimestamp();
+
+            const menuOpcoes = ticketConfig.categorias.map((cat, i) => ({
+                label: cat.label,
+                value: `ticket_cat_${i}`,
+                description: cat.descricao,
+                emoji: cat.emoji || '📝'
+            }));
+
+            const menu = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('ticket_selecionar_categoria')
+                    .setPlaceholder('Selecione Uma Categoria')
+                    .addOptions(menuOpcoes)
+            );
+
+            await interaction.reply({ content: "✅ Painel de tickets enviado.", ephemeral: true });
+            return interaction.channel.send({ embeds: [embed], components: [menu] });
+        }
+
+        if (commandName === 'ticket_config') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem configurar tickets.", ephemeral: true });
+            }
+
+            const logs = options.getChannel('logs');
+            const cargoSuporte = options.getRole('cargo_suporte');
+            const titulo = options.getString('titulo');
+
+            let resposta = "⚙️ **Configuração de Tickets atualizada:**\n";
+            if (logs) { ticketConfig.canalLogs = logs.id; resposta += `📋 Canal de Logs: ${logs.toString()}\n`; }
+            if (cargoSuporte) { ticketConfig.cargoSuporte = cargoSuporte.id; resposta += `🛡️ Cargo Suporte: ${cargoSuporte.toString()}\n`; }
+            if (titulo) { ticketConfig.titulo = titulo; resposta += `📝 Título: **${titulo}**\n`; }
+
+            if (!logs && !cargoSuporte && !titulo) {
+                resposta = `⚙️ **Configuração atual:**\n📋 Logs: ${ticketConfig.canalLogs ? `<#${ticketConfig.canalLogs}>` : 'Não configurado'}\n🛡️ Suporte: ${ticketConfig.cargoSuporte ? `<@&${ticketConfig.cargoSuporte}>` : 'Não configurado'}\n📝 Título: **${ticketConfig.titulo}**\n📂 Categorias: ${ticketConfig.categorias.map(c => c.label).join(', ') || 'Nenhuma'}`;
+            }
+
+            return interaction.reply({ content: resposta, ephemeral: true });
+        }
+
+        if (commandName === 'ticket_categoria') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: "❌ Apenas Administradores podem gerenciar categorias.", ephemeral: true });
+            }
+
+            const nome = options.getString('nome');
+            const descricao = options.getString('descricao');
+            const emoji = options.getString('emoji') || '📝';
+
+            if (ticketConfig.categorias.length >= 25) {
+                return interaction.reply({ content: "❌ Limite máximo de 25 categorias atingido.", ephemeral: true });
+            }
+
+            ticketConfig.categorias.push({ label: nome, descricao, emoji });
+            return interaction.reply({ content: `✅ Categoria **${emoji} ${nome}** adicionada! (Total: ${ticketConfig.categorias.length})`, ephemeral: true });
+        }
+
     }
 
     if (interaction.isStringSelectMenu()) {
+        // 🗑️ REMOVER CATEGORIA DO TICKET
+        if (interaction.customId === 'ticket_remover_cat_menu') {
+            const catIdx = parseInt(interaction.values[0].replace('remover_cat_', ''));
+            const categoria = ticketConfig.categorias[catIdx];
+            if (!categoria) return interaction.update({ content: "❌ Categoria inválida.", components: [] });
+
+            const nomeRemovido = categoria.label;
+            ticketConfig.categorias.splice(catIdx, 1);
+            return interaction.update({ content: `✅ Categoria **${nomeRemovido}** removida! (Restam: ${ticketConfig.categorias.length})`, components: [] });
+        }
+
+        // 🎫 SELEÇÃO DE CATEGORIA DO TICKET
+        if (interaction.customId === 'ticket_selecionar_categoria') {
+            const catIdx = parseInt(interaction.values[0].replace('ticket_cat_', ''));
+            const categoria = ticketConfig.categorias[catIdx];
+            if (!categoria) return interaction.reply({ content: "❌ Categoria inválida.", ephemeral: true });
+
+            const ticketExistente = ticketsAtivos.get(interaction.user.id);
+            if (ticketExistente) {
+                const canalExiste = interaction.guild.channels.cache.get(ticketExistente.canalId);
+                if (canalExiste) {
+                    return interaction.reply({ content: `❌ Você já possui um ticket aberto: ${canalExiste.toString()}`, ephemeral: true });
+                }
+                ticketsAtivos.delete(interaction.user.id);
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            ticketConfig.contadorTickets++;
+            const nomeCanal = `ticket-${ticketConfig.contadorTickets}-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '');
+
+            try {
+                const permissoes = [
+                    { id: interaction.guild.id, deny: ['ViewChannel'] },
+                    { id: interaction.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'AttachFiles'] },
+                    { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageChannels'] }
+                ];
+
+                if (ticketConfig.cargoSuporte) {
+                    permissoes.push({ id: ticketConfig.cargoSuporte, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'AttachFiles'] });
+                }
+
+                const canalTicket = await interaction.guild.channels.create({
+                    name: nomeCanal,
+                    type: 0,
+                    permissionOverwrites: permissoes
+                });
+
+                ticketsAtivos.set(interaction.user.id, {
+                    canalId: canalTicket.id,
+                    categoria: categoria.label,
+                    criadoEm: Date.now(),
+                    responsavel: null,
+                    userId: interaction.user.id
+                });
+
+                const embedTicket = new EmbedBuilder()
+                    .setAuthor({ name: `${ticketConfig.titulo}`, iconURL: configServidor.logo || undefined })
+                    .setTitle(`ℹ️ Atendimento • ${configServidor.nome}`)
+                    .setDescription(`Seja bem-vindo(a) ${interaction.user.toString()} ao seu atendimento. Tente ser o mais breve e específico possível para que possamos te fornecer o melhor atendimento.\n\n━━━━━━━━━━━━━━━━━━━━━━\n📂 Categoria: **${categoria.label}**\n━━━━━━━━━━━━━━━━━━━━━━`)
+                    .setColor(configServidor.cor)
+                    .setThumbnail(configServidor.logo || undefined)
+                    .setFooter({ text: `© ${configServidor.nome} ${new Date().getFullYear()}`, iconURL: configServidor.logo || undefined })
+                    .setTimestamp();
+
+                const botoesTicket = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('ticket_notificar').setLabel('Notificar Equipe').setStyle(ButtonStyle.Secondary).setEmoji('📢'),
+                    new ButtonBuilder().setCustomId('ticket_menu_equipe').setLabel('Menu Equipe').setStyle(ButtonStyle.Secondary).setEmoji('⚙️'),
+                    new ButtonBuilder().setCustomId('ticket_sair').setLabel('Sair do Ticket').setStyle(ButtonStyle.Secondary).setEmoji('🚪'),
+                    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('Fechar o Ticket').setStyle(ButtonStyle.Secondary).setEmoji('🔒')
+                );
+
+                await canalTicket.send({ embeds: [embedTicket], components: [botoesTicket] });
+
+                // Log
+                if (ticketConfig.canalLogs) {
+                    const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                    if (canalLogs) {
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle("🎫 Ticket Aberto")
+                            .setColor("#2ecc71")
+                            .addFields(
+                                { name: "Usuário", value: interaction.user.toString(), inline: true },
+                                { name: "Categoria", value: categoria.label, inline: true },
+                                { name: "Canal", value: canalTicket.toString(), inline: true }
+                            )
+                            .setTimestamp();
+                        canalLogs.send({ embeds: [logEmbed] });
+                    }
+                }
+
+                return interaction.editReply({ content: `✅ Ticket criado: ${canalTicket.toString()}` });
+            } catch (error) {
+                console.error("Erro ao criar ticket:", error);
+                return interaction.editReply({ content: `❌ Erro ao criar ticket: ${error.message}` });
+            }
+        }
+
+        // 🎫 AÇÕES DA EQUIPE NO TICKET
+        if (interaction.customId === 'ticket_acao_equipe') {
+            const acao = interaction.values[0];
+            const ticketInfo = [...ticketsAtivos.values()].find(t => t.canalId === interaction.channel.id);
+
+            if (!ticketInfo) return interaction.update({ content: "❌ Este canal não é um ticket ativo.", components: [] });
+
+            if (acao === 'assumir') {
+                ticketInfo.responsavel = interaction.user.id;
+                await interaction.update({ content: `🩺 **${interaction.user.toString()} assumiu este ticket como responsável!**`, components: [] });
+
+                if (ticketConfig.canalLogs) {
+                    const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                    if (canalLogs) {
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle("🩺 Ticket Assumido")
+                            .setColor("#9b59b6")
+                            .addFields(
+                                { name: "Responsável", value: interaction.user.toString(), inline: true },
+                                { name: "Canal", value: interaction.channel.toString(), inline: true }
+                            )
+                            .setTimestamp();
+                        canalLogs.send({ embeds: [logEmbed] });
+                    }
+                }
+                return;
+            }
+
+            if (acao === 'adicionar') {
+                await interaction.update({ content: "➕ **Mencione o usuário** que deseja adicionar ao ticket (ex: `@usuario`). Envie no chat:", components: [] });
+
+                const filtro = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
+                try {
+                    const coletadas = await interaction.channel.awaitMessages({ filter: filtro, max: 1, time: 30000, errors: ['time'] });
+                    const usuarioAlvo = coletadas.first().mentions.users.first();
+                    await interaction.channel.permissionOverwrites.edit(usuarioAlvo.id, {
+                        ViewChannel: true, SendMessages: true, ReadMessageHistory: true
+                    });
+                    await interaction.channel.send({ content: `✅ ${usuarioAlvo.toString()} foi adicionado ao ticket.` });
+                    await coletadas.first().delete().catch(() => {});
+
+                    if (ticketConfig.canalLogs) {
+                        const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                        if (canalLogs) {
+                            const logEmbed = new EmbedBuilder()
+                                .setTitle("➕ Membro Adicionado ao Ticket")
+                                .setColor("#3498db")
+                                .addFields(
+                                    { name: "Adicionado", value: usuarioAlvo.toString(), inline: true },
+                                    { name: "Por", value: interaction.user.toString(), inline: true },
+                                    { name: "Canal", value: interaction.channel.toString(), inline: true }
+                                )
+                                .setTimestamp();
+                            canalLogs.send({ embeds: [logEmbed] });
+                        }
+                    }
+                } catch {
+                    interaction.channel.send({ content: "⏰ Tempo esgotado. Tente novamente pelo Menu Equipe." }).catch(() => {});
+                }
+                return;
+            }
+
+            if (acao === 'remover') {
+                await interaction.update({ content: "➖ **Mencione o usuário** que deseja remover do ticket (ex: `@usuario`). Envie no chat:", components: [] });
+
+                const filtro = m => m.author.id === interaction.user.id && m.mentions.users.size > 0;
+                try {
+                    const coletadas = await interaction.channel.awaitMessages({ filter: filtro, max: 1, time: 30000, errors: ['time'] });
+                    const usuarioAlvo = coletadas.first().mentions.users.first();
+                    await interaction.channel.permissionOverwrites.edit(usuarioAlvo.id, { ViewChannel: false });
+                    await interaction.channel.send({ content: `✅ ${usuarioAlvo.toString()} foi removido do ticket.` });
+                    await coletadas.first().delete().catch(() => {});
+
+                    if (ticketConfig.canalLogs) {
+                        const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                        if (canalLogs) {
+                            const logEmbed = new EmbedBuilder()
+                                .setTitle("➖ Membro Removido do Ticket")
+                                .setColor("#e74c3c")
+                                .addFields(
+                                    { name: "Removido", value: usuarioAlvo.toString(), inline: true },
+                                    { name: "Por", value: interaction.user.toString(), inline: true },
+                                    { name: "Canal", value: interaction.channel.toString(), inline: true }
+                                )
+                                .setTimestamp();
+                            canalLogs.send({ embeds: [logEmbed] });
+                        }
+                    }
+                } catch {
+                    interaction.channel.send({ content: "⏰ Tempo esgotado. Tente novamente pelo Menu Equipe." }).catch(() => {});
+                }
+                return;
+            }
+        }
+
+        if (interaction.customId === 'set_escolher_cargo') {
+            const cargoEscolhido = interaction.values[0];
+
+            const modal = new ModalBuilder()
+                .setCustomId(`modal_set_${cargoEscolhido}`)
+                .setTitle('Formulário de Registro');
+
+            const campoNome = new TextInputBuilder().setCustomId('set_nome').setLabel('Nome Completo').setStyle(TextInputStyle.Short).setRequired(true);
+            const campoId = new TextInputBuilder().setCustomId('set_id').setLabel('Número do ID / Passaporte').setStyle(TextInputStyle.Short).setRequired(true);
+            const campoTelefone = new TextInputBuilder().setCustomId('set_telefone').setLabel('Telefone').setStyle(TextInputStyle.Short).setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(campoNome),
+                new ActionRowBuilder().addComponents(campoId),
+                new ActionRowBuilder().addComponents(campoTelefone)
+            );
+
+            return interaction.showModal(modal);
+        }
+
         if (interaction.customId === 'menu_selecionar_funcao') {
             const funcao = interaction.values[0];
 
@@ -754,6 +1372,217 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.isButton()) {
         const customId = interaction.customId;
+
+        // ==========================================
+        // BOTÕES DO SISTEMA DE TICKETS
+        // ==========================================
+        if (customId === 'ticket_notificar') {
+            if (!ticketConfig.cargoSuporte) {
+                return interaction.reply({ content: "❌ Nenhum cargo de suporte configurado. Use `/ticket_config`.", ephemeral: true });
+            }
+            return interaction.reply({ content: `📢 **Equipe notificada!** <@&${ticketConfig.cargoSuporte}>, um usuário aguarda atendimento neste ticket.` });
+        }
+
+        if (customId === 'ticket_menu_equipe') {
+            const ehSuporte = ticketConfig.cargoSuporte && interaction.member.roles.cache.has(ticketConfig.cargoSuporte);
+            const ehAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+
+            if (!ehSuporte && !ehAdmin) {
+                return interaction.reply({ content: "❌ Apenas a equipe de suporte pode usar este menu.", ephemeral: true });
+            }
+
+            const menuEquipe = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('ticket_acao_equipe')
+                    .setPlaceholder('Selecione uma ação...')
+                    .addOptions([
+                        { label: 'Assumir Ticket', value: 'assumir', description: 'Se tornar o responsável por este ticket', emoji: '🩺' },
+                        { label: 'Adicionar Pessoa', value: 'adicionar', description: 'Adicionar um membro ao ticket', emoji: '➕' },
+                        { label: 'Remover Pessoa', value: 'remover', description: 'Remover um membro do ticket', emoji: '➖' }
+                    ])
+            );
+
+            return interaction.reply({ content: "⚙️ **Menu da Equipe** — Escolha uma ação:", components: [menuEquipe], ephemeral: true });
+        }
+
+        if (customId === 'ticket_sair') {
+            const ticketInfo = [...ticketsAtivos.values()].find(t => t.canalId === interaction.channel.id);
+            if (!ticketInfo) return interaction.reply({ content: "❌ Este canal não é um ticket.", ephemeral: true });
+
+            await interaction.channel.permissionOverwrites.edit(interaction.user.id, { ViewChannel: false }).catch(() => {});
+            await interaction.reply({ content: `🚪 ${interaction.user.toString()} saiu do ticket.` });
+
+            if (ticketConfig.canalLogs) {
+                const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                if (canalLogs) {
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle("🚪 Membro Saiu do Ticket")
+                        .setColor("#e67e22")
+                        .addFields(
+                            { name: "Usuário", value: interaction.user.toString(), inline: true },
+                            { name: "Canal", value: interaction.channel.toString(), inline: true }
+                        )
+                        .setTimestamp();
+                    canalLogs.send({ embeds: [logEmbed] });
+                }
+            }
+            return;
+        }
+
+        if (customId === 'ticket_fechar') {
+            const ehSuporte = ticketConfig.cargoSuporte && interaction.member.roles.cache.has(ticketConfig.cargoSuporte);
+            const ehAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+            const ticketInfo = [...ticketsAtivos.values()].find(t => t.canalId === interaction.channel.id);
+
+            if (!ticketInfo) return interaction.reply({ content: "❌ Este canal não é um ticket.", ephemeral: true });
+
+            const ehDono = interaction.user.id === ticketInfo.userId;
+            if (!ehSuporte && !ehAdmin && !ehDono) {
+                return interaction.reply({ content: "❌ Apenas a equipe ou o dono do ticket podem fechá-lo.", ephemeral: true });
+            }
+
+            await interaction.reply({ content: "🔒 **Fechando ticket...** Gerando transcript em 5 segundos." });
+
+            // Gerar transcript
+            try {
+                const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
+                const msgOrdenadas = [...mensagens.values()].reverse();
+                let transcript = `=== TRANSCRIPT DO TICKET ===\n`;
+                transcript += `Canal: ${interaction.channel.name}\n`;
+                transcript += `Categoria: ${ticketInfo.categoria}\n`;
+                transcript += `Aberto por: ${ticketInfo.userId}\n`;
+                transcript += `Responsável: ${ticketInfo.responsavel || 'Nenhum'}\n`;
+                transcript += `Data: ${new Date().toLocaleString('pt-BR')}\n`;
+                transcript += `=============================\n\n`;
+
+                for (const msg of msgOrdenadas) {
+                    const data = msg.createdAt.toLocaleString('pt-BR');
+                    transcript += `[${data}] ${msg.author.tag}: ${msg.content || '[embed/anexo]'}\n`;
+                }
+
+                // Enviar transcript nos logs
+                if (ticketConfig.canalLogs) {
+                    const canalLogs = interaction.guild.channels.cache.get(ticketConfig.canalLogs);
+                    if (canalLogs) {
+                        const buffer = Buffer.from(transcript, 'utf-8');
+                        const attachment = new AttachmentBuilder(buffer, { name: `transcript-${interaction.channel.name}.txt` });
+
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle("🔒 Ticket Fechado")
+                            .setColor("#e74c3c")
+                            .addFields(
+                                { name: "Fechado por", value: interaction.user.toString(), inline: true },
+                                { name: "Categoria", value: ticketInfo.categoria, inline: true },
+                                { name: "Responsável", value: ticketInfo.responsavel ? `<@${ticketInfo.responsavel}>` : 'Nenhum', inline: true },
+                                { name: "Mensagens", value: `${msgOrdenadas.length}`, inline: true }
+                            )
+                            .setTimestamp();
+
+                        await canalLogs.send({ embeds: [logEmbed], files: [attachment] });
+                    }
+                }
+            } catch (err) {
+                console.error("Erro ao gerar transcript:", err);
+            }
+
+            // Remover dos ativos e deletar canal
+            for (const [userId, info] of ticketsAtivos) {
+                if (info.canalId === interaction.channel.id) {
+                    ticketsAtivos.delete(userId);
+                    break;
+                }
+            }
+
+            setTimeout(async () => {
+                await interaction.channel.delete().catch(() => {});
+            }, 5000);
+            return;
+        }
+
+        if (customId === 'ticket_confirmar_add') {
+            // Tratado pela coleção de mensagens no handler de adicionar
+            return;
+        }
+
+        if (customId === 'set_registrar') {
+            const menu = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId('set_escolher_cargo')
+                    .setPlaceholder('Escolha seu cargo...')
+                    .addOptions([
+                        { label: 'Paciente', value: 'paciente', description: 'Registro como Paciente (aprovação imediata)', emoji: '🏥' },
+                        { label: 'Jurídico', value: 'juridico', description: 'Registro como Jurídico (requer aprovação)', emoji: '⚖️' },
+                        { label: 'Polícia', value: 'policia', description: 'Registro como Polícia (requer aprovação)', emoji: '🚔' }
+                    ])
+            );
+
+            return interaction.reply({ content: "👇 Escolha o cargo para o registro:", components: [menu], ephemeral: true });
+        }
+
+        if (customId === 'set_perfil') {
+            const membro = interaction.member;
+            const cargosDoMembro = [];
+            const mapaCargos = {
+                [CARGOS.PACIENTE]: "🏥 Paciente",
+                [CARGOS.JURIDICO]: "⚖️ Jurídico",
+                [CARGOS.POLICIA]: "🚔 Polícia",
+                [CARGOS.ESTAGIARIO]: "📚 Estagiário",
+                [CARGOS.ENFERMEIRO]: "💉 Enfermeiro",
+                [CARGOS.PARAMEDICO]: "🚑 Paramédico",
+                [CARGOS.MEDICO]: "🩺 Médico"
+            };
+
+            for (const [cargoId, cargoNome] of Object.entries(mapaCargos)) {
+                if (membro.roles.cache.has(cargoId)) cargosDoMembro.push(cargoNome);
+            }
+
+            const embedPerfil = new EmbedBuilder()
+                .setTitle(`👤 Perfil — ${membro.displayName}`)
+                .setColor("#2b2d31")
+                .addFields(
+                    { name: "Usuário", value: membro.toString(), inline: true },
+                    { name: "Apelido", value: membro.displayName || "Sem apelido", inline: true },
+                    { name: "Cargos", value: cargosDoMembro.length > 0 ? cargosDoMembro.join(", ") : "Nenhum cargo registrado", inline: false }
+                )
+                .setThumbnail(membro.user.displayAvatarURL())
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embedPerfil], ephemeral: true });
+        }
+
+        if (customId.startsWith('set_aprovar_') || customId.startsWith('set_rejeitar_')) {
+            if (!verificarPermissaoRH('fichas')) return interaction.reply({ content: "❌ Você não faz parte do setor autorizado a avaliar fichas.", ephemeral: true });
+
+            const partes = customId.split('_');
+            const acao = partes[1];
+            const usuarioId = partes[2];
+
+            const dadosFicha = fichasPendentes.get(usuarioId);
+            if (!dadosFicha) return interaction.update({ content: "❌ Ficha não encontrada ou já processada.", components: [] });
+
+            const membroCandidato = await interaction.guild.members.fetch(usuarioId).catch(() => null);
+            if (!membroCandidato) return interaction.update({ content: "❌ O usuário saiu do servidor.", components: [] });
+
+            if (acao === 'aprovar') {
+                const cargoId = dadosFicha.cargoId;
+                const tagCargo = PREFIXOS[cargoId] || "";
+
+                await membroCandidato.roles.add(cargoId);
+                await membroCandidato.setNickname(`${tagCargo} ${dadosFicha.nome} | ${dadosFicha.id}`).catch(() => {});
+
+                await interaction.update({
+                    content: `✅ **Ficha Aprovada por ${interaction.user.tag}!**\nO membro ${membroCandidato.toString()} foi registrado como <@&${cargoId}>.`,
+                    components: [], embeds: []
+                });
+                await atualizarQuadroFuncionarios(interaction.guild);
+            } else {
+                await interaction.update({
+                    content: `🔴 **Ficha Rejeitada por ${interaction.user.tag}.** O cadastro foi recusado.`,
+                    components: [], embeds: []
+                });
+            }
+            return fichasPendentes.delete(usuarioId);
+        }
 
         if (customId === 'btn_abrir_ficha') {
             const modal = new ModalBuilder().setCustomId('modal_ficha_entrada').setTitle('Formulário de Entrada - Hospital');
@@ -807,29 +1636,148 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (customId === 'ponto_entrar') {
-            if (pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você já possui um turno de serviço ativo.", ephemeral: true });
-            pontosAtivos.set(interaction.user.id, Date.now());
-            return interaction.reply({ content: "🟢 **Turno Iniciado!** Tenha um excelente plantão.", ephemeral: true });
-        }
+            if (pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você já possui um turno ativo.", ephemeral: true });
+            pontosAtivos.set(interaction.user.id, {
+                entrada: Date.now(),
+                pausas: [],
+                pausaAtual: null,
+                totalPausado: 0
+            });
 
-        if (customId === 'ponto_sair') {
-            if (!pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você não iniciou um plantão neste terminal.", ephemeral: true });
-
-            const tempoEntrada = pontosAtivos.get(interaction.user.id);
-            const diffMilissegundos = Date.now() - tempoEntrada;
-            const minutosTotais = Math.floor(diffMilissegundos / 60000);
-            const horas = Math.floor(minutosTotais / 60);
-            const minutes = minutosTotais % 60;
-
-            pontosAtivos.delete(interaction.user.id);
-            await interaction.reply({ content: `🔴 **Turno Encerrado!** Duração total computada: **${horas}h ${minutes}m**.`, ephemeral: true });
+            const horaEntrada = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            await interaction.reply({ content: `🟢 **Turno Iniciado às ${horaEntrada}!** Tenha um excelente plantão.`, ephemeral: true });
 
             const canalLogsPonto = interaction.guild.channels.cache.get(CANAIS.LOGS_PONTO);
             if (canalLogsPonto) {
                 const logEmbed = new EmbedBuilder()
-                    .setTitle("⏱️ Registro de Plantão Encerrado")
-                    .addFields({ name: "Profissional", value: interaction.user.toString(), inline: true }, { name: "Duração Registrada", value: `${horas}h ${minutes}m`, inline: true })
-                    .setColor("#ff9900").setTimestamp();
+                    .setTitle("🟢 Entrada de Serviço")
+                    .setColor("#2ecc71")
+                    .addFields(
+                        { name: "Profissional", value: interaction.user.toString(), inline: true },
+                        { name: "Horário", value: horaEntrada, inline: true }
+                    )
+                    .setTimestamp();
+                canalLogsPonto.send({ embeds: [logEmbed] });
+            }
+            return;
+        }
+
+        if (customId === 'ponto_pausar') {
+            if (!pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você não está em serviço.", ephemeral: true });
+            const dados = pontosAtivos.get(interaction.user.id);
+            if (dados.pausaAtual) return interaction.reply({ content: "❌ Você já está em pausa.", ephemeral: true });
+
+            dados.pausaAtual = Date.now();
+            const horaPausa = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            await interaction.reply({ content: `⏸️ **Turno pausado às ${horaPausa}.** Use ▶️ Retomar quando voltar.`, ephemeral: true });
+
+            const canalLogsPonto = interaction.guild.channels.cache.get(CANAIS.LOGS_PONTO);
+            if (canalLogsPonto) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle("⏸️ Pausa Iniciada")
+                    .setColor("#f39c12")
+                    .addFields(
+                        { name: "Profissional", value: interaction.user.toString(), inline: true },
+                        { name: "Horário", value: horaPausa, inline: true }
+                    )
+                    .setTimestamp();
+                canalLogsPonto.send({ embeds: [logEmbed] });
+            }
+            return;
+        }
+
+        if (customId === 'ponto_retomar') {
+            if (!pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você não está em serviço.", ephemeral: true });
+            const dados = pontosAtivos.get(interaction.user.id);
+            if (!dados.pausaAtual) return interaction.reply({ content: "❌ Você não está em pausa.", ephemeral: true });
+
+            const duracaoPausa = Date.now() - dados.pausaAtual;
+            dados.pausas.push({ inicio: dados.pausaAtual, fim: Date.now() });
+            dados.totalPausado += duracaoPausa;
+            dados.pausaAtual = null;
+
+            const minPausa = Math.floor(duracaoPausa / 60000);
+            const horaRetorno = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            await interaction.reply({ content: `▶️ **Turno retomado às ${horaRetorno}!** Pausa de ${minPausa} minutos registrada.`, ephemeral: true });
+
+            const canalLogsPonto = interaction.guild.channels.cache.get(CANAIS.LOGS_PONTO);
+            if (canalLogsPonto) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle("▶️ Retorno de Pausa")
+                    .setColor("#3498db")
+                    .addFields(
+                        { name: "Profissional", value: interaction.user.toString(), inline: true },
+                        { name: "Duração da Pausa", value: `${minPausa}m`, inline: true }
+                    )
+                    .setTimestamp();
+                canalLogsPonto.send({ embeds: [logEmbed] });
+            }
+            return;
+        }
+
+        if (customId === 'ponto_sair') {
+            if (!pontosAtivos.has(interaction.user.id)) return interaction.reply({ content: "❌ Você não está em serviço.", ephemeral: true });
+            const dados = pontosAtivos.get(interaction.user.id);
+
+            // Se estiver pausado, finalizar a pausa
+            if (dados.pausaAtual) {
+                const duracaoPausa = Date.now() - dados.pausaAtual;
+                dados.pausas.push({ inicio: dados.pausaAtual, fim: Date.now() });
+                dados.totalPausado += duracaoPausa;
+                dados.pausaAtual = null;
+            }
+
+            const tempoTotal = Date.now() - dados.entrada;
+            const tempoTrabalhado = tempoTotal - dados.totalPausado;
+            const minutosTrabalhados = Math.floor(tempoTrabalhado / 60000);
+            const minutosPausas = Math.floor(dados.totalPausado / 60000);
+            const minutosTotais = Math.floor(tempoTotal / 60000);
+
+            const horasTrab = Math.floor(minutosTrabalhados / 60);
+            const minsTrab = minutosTrabalhados % 60;
+            const horasSaida = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            const horasEntrada = new Date(dados.entrada).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+            pontosAtivos.delete(interaction.user.id);
+
+            // Acumular no ranking
+            const dadosRank = rankingPonto.get(interaction.user.id) || { minutos: 0, nome: interaction.user.tag, turnos: 0 };
+            dadosRank.minutos += minutosTrabalhados;
+            dadosRank.nome = interaction.user.tag;
+            dadosRank.turnos = (dadosRank.turnos || 0) + 1;
+            rankingPonto.set(interaction.user.id, dadosRank);
+
+            // Salvar no histórico
+            const listaHistorico = historicoPonto.get(interaction.user.id) || [];
+            listaHistorico.push({
+                entrada: dados.entrada,
+                saida: Date.now(),
+                duracao: minutosTrabalhados,
+                pausas: minutosPausas,
+                numPausas: dados.pausas.length,
+                data: Date.now()
+            });
+            historicoPonto.set(interaction.user.id, listaHistorico);
+
+            await interaction.reply({
+                content: `🔴 **Turno Encerrado às ${horasSaida}!**\n━━━━━━━━━━━━━━━━━━━━━━\n🟢 Entrada: **${horasEntrada}**\n🔴 Saída: **${horasSaida}**\n⏱️ Tempo trabalhado: **${horasTrab}h ${minsTrab}m**\n⏸️ Pausas: **${minutosPausas}m** (${dados.pausas.length} pausa${dados.pausas.length !== 1 ? 's' : ''})`,
+                ephemeral: true
+            });
+
+            const canalLogsPonto = interaction.guild.channels.cache.get(CANAIS.LOGS_PONTO);
+            if (canalLogsPonto) {
+                const logEmbed = new EmbedBuilder()
+                    .setTitle("🔴 Saída de Serviço")
+                    .setColor("#e74c3c")
+                    .addFields(
+                        { name: "Profissional", value: interaction.user.toString(), inline: true },
+                        { name: "Entrada", value: horasEntrada, inline: true },
+                        { name: "Saída", value: horasSaida, inline: true },
+                        { name: "Tempo Trabalhado", value: `${horasTrab}h ${minsTrab}m`, inline: true },
+                        { name: "Pausas", value: `${minutosPausas}m (${dados.pausas.length}x)`, inline: true },
+                        { name: "Total Acumulado", value: `${Math.floor(dadosRank.minutos / 60)}h ${dadosRank.minutos % 60}m`, inline: true }
+                    )
+                    .setTimestamp();
                 canalLogsPonto.send({ embeds: [logEmbed] });
             }
             return;
@@ -837,6 +1785,66 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith('modal_set_')) {
+            const cargoEscolhido = interaction.customId.replace('modal_set_', '');
+            const nome = interaction.fields.getTextInputValue('set_nome');
+            const idPassaporte = interaction.fields.getTextInputValue('set_id');
+            const telefone = interaction.fields.getTextInputValue('set_telefone');
+
+            const mapaCargoId = {
+                'paciente': CARGOS.PACIENTE,
+                'juridico': CARGOS.JURIDICO,
+                'policia': CARGOS.POLICIA
+            };
+            const mapaCargoNome = {
+                'paciente': '🏥 Paciente',
+                'juridico': '⚖️ Jurídico',
+                'policia': '🚔 Polícia'
+            };
+
+            const cargoId = mapaCargoId[cargoEscolhido];
+            const cargoNome = mapaCargoNome[cargoEscolhido];
+
+            if (cargoEscolhido === 'paciente') {
+                const tagCargo = PREFIXOS[cargoId] || "";
+                await interaction.member.roles.add(cargoId).catch(() => {});
+                await interaction.member.setNickname(`${tagCargo} ${nome} | ${idPassaporte}`).catch(() => {});
+
+                return interaction.reply({
+                    content: `✅ **Registro aprovado automaticamente!**\nVocê foi registrado como **${cargoNome}**.\nApelido: **${tagCargo} ${nome} | ${idPassaporte}**`,
+                    ephemeral: true
+                });
+            }
+
+            fichasPendentes.set(interaction.user.id, { nome, id: idPassaporte, telefone, cargoId, cargoNome });
+
+            await interaction.reply({ content: "✅ **Ficha Enviada!** Seus dados foram encaminhados para análise. Aguarde a aprovação.", ephemeral: true });
+
+            const salaDiretoria = interaction.guild.channels.cache.get(CANAIS.DIRETORIA_FICHAS);
+            if (salaDiretoria) {
+                const embedFicha = new EmbedBuilder()
+                    .setTitle("📋 Nova Solicitação de Registro")
+                    .setColor(cargoEscolhido === 'juridico' ? "#f1c40f" : "#3498db")
+                    .addFields(
+                        { name: "👤 Usuário Discord", value: interaction.user.toString(), inline: true },
+                        { name: "📋 Cargo Solicitado", value: cargoNome, inline: true },
+                        { name: "\u200B", value: "\u200B", inline: false },
+                        { name: "📝 Nome", value: nome, inline: true },
+                        { name: "🆔 ID / Passaporte", value: idPassaporte, inline: true },
+                        { name: "📞 Telefone", value: telefone, inline: true }
+                    )
+                    .setTimestamp();
+
+                const botoesDiretoria = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`set_aprovar_${interaction.user.id}`).setLabel('🟢 Aprovar').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId(`set_rejeitar_${interaction.user.id}`).setLabel('🔴 Rejeitar').setStyle(ButtonStyle.Danger)
+                );
+
+                salaDiretoria.send({ embeds: [embedFicha], components: [botoesDiretoria] });
+            }
+            return;
+        }
+
         if (interaction.customId === 'modal_ficha_entrada') {
             const nomeRp = interaction.fields.getTextInputValue('txt_nome');
             const idRp = interaction.fields.getTextInputValue('txt_id');
@@ -866,6 +1874,17 @@ client.on('interactionCreate', async interaction => {
                 salaDiretoria.send({ embeds: [embedFicha], components: [botoesDiretoria] });
             }
         }
+    }
+
+    } catch (erro) {
+        console.error('Erro ao processar interação:', erro);
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({ content: '❌ Ocorreu um erro interno. Tente novamente.' }).catch(() => {});
+            } else if (!interaction.replied) {
+                await interaction.reply({ content: '❌ Ocorreu um erro interno. Tente novamente.', ephemeral: true }).catch(() => {});
+            }
+        } catch (e) {}
     }
 });
 
