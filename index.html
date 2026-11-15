@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painel Discord - Criador & Sub-Criador</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- TELA DE LOGIN -->
+  <div id="login-screen" class="login-wrapper">
+    <div class="login-box">
+      <h2>Acesso ao Painel Discord</h2>
+      <p>Insira sua senha de <strong>Criador</strong> ou <strong>Sub-Criador</strong> para continuar.</p>
+      <div class="form-group">
+        <input type="password" id="login-senha" placeholder="Digite sua senha de acesso..." />
+      </div>
+      <button id="btn-login" class="btn-primary btn-full">Entrar no Painel</button>
+      <span id="login-erro" class="error-msg"></span>
+    </div>
+  </div>
+
+  <!-- PAINEL PRINCIPAL -->
+  <div id="app-screen" class="container" style="display: none;">
+    <header class="top-bar">
+      <div>
+        <div class="title-row">
+          <h1>Painel de Postagens Discord</h1>
+          <span id="role-badge" class="role-tag">CRIADOR</span>
+        </div>
+        <p class="subtitle" id="role-subtitle">Controle total do bot e postagens</p>
+      </div>
+      <div class="header-actions">
+        <div id="bot-badge" class="badge offline">
+          <span class="dot"></span>
+          <span id="bot-badge-text">Desconectado</span>
+        </div>
+        <button id="btn-sair" class="btn-secondary">Sair</button>
+      </div>
+    </header>
+
+    <!-- ÁREA EXCLUSIVA DO CRIADOR -->
+    <div id="criador-only-section" style="display: none;">
+      <div class="card criador-card">
+        <h3>👑 Área Exclusiva do Criador — Ativação e Segurança</h3>
+        <div class="row-2">
+          <div>
+            <label for="bot-token-input">Token do Bot (Ativa o painel para os Sub-Criadores)</label>
+            <div class="input-group">
+              <input type="password" id="bot-token-input" placeholder="Cole o Token do Bot aqui..." />
+              <button id="salvar-token-btn" class="btn-primary">Ativar Bot</button>
+            </div>
+            <span id="token-status"></span>
+          </div>
+
+          <div>
+            <label>Alterar Senhas de Acesso</label>
+            <div class="input-group">
+              <input type="text" id="nova-senha-criador" placeholder="Nova senha Criador" />
+              <input type="text" id="nova-senha-sub" placeholder="Nova senha Sub-Criador" />
+              <button id="salvar-senhas-btn" class="btn-secondary">Salvar Senhas</button>
+            </div>
+            <span id="senhas-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AVISO PARA SUB-CRIADOR QUANDO O BOT ESTIVER OFFLINE -->
+    <div id="sub-offline-alert" class="card alert-warning" style="display: none;">
+      <h3>⚠️ Bot Aguardando Ativação</h3>
+      <p>O Criador ainda não ativou o bot no sistema. Aguarde o Criador conectar o bot para liberar as postagens.</p>
+    </div>
+
+    <!-- ÁREA DE POSTAGEM -->
+    <div id="painel-principal" class="grid-layout disabled-panel">
+      
+      <!-- Formulário -->
+      <div class="card form-column">
+        <h3>Criar Postagem / Embed</h3>
+
+        <div class="row-2">
+          <div class="form-group">
+            <label for="select-servidor">Servidor</label>
+            <select id="select-servidor">
+              <option value="">Aguardando bot...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="select-canal">Canal de Texto</label>
+            <select id="select-canal">
+              <option value="">Selecione um servidor...</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="conteudo-texto">Mensagem Normal (Opcional — ex: @everyone)</label>
+          <textarea id="conteudo-texto" rows="2" placeholder="Escreva uma mensagem fora do embed se desejar..."></textarea>
+        </div>
+
+        <div class="toggle-embed">
+          <label class="switch-label">
+            <input type="checkbox" id="usar-embed" checked>
+            <span>Incluir Cartão Embed Personalizado</span>
+          </label>
+        </div>
+
+        <div id="embed-editor-fields">
+          <div class="row-color">
+            <div class="form-group flex-1">
+              <label for="embed-titulo">Título do Embed</label>
+              <input type="text" id="embed-titulo" placeholder="Ex: 📢 AVISO IMPORTANTE">
+            </div>
+            <div class="form-group">
+              <label for="embed-cor">Cor</label>
+              <input type="color" id="embed-cor" value="#5865F2">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="embed-descricao">Descrição (Aceita **negrito**, *itálico*, listas e links)</label>
+            <textarea id="embed-descricao" rows="4" placeholder="Escreva o conteúdo principal da postagem..."></textarea>
+          </div>
+
+          <details class="advanced-box">
+            <summary>Autor, Imagens e Rodapé (Clique para expandir)</summary>
+            <div class="advanced-content">
+              <div class="row-2">
+                <div class="form-group">
+                  <label for="embed-autor-nome">Nome do Autor</label>
+                  <input type="text" id="embed-autor-nome" placeholder="Ex: Administração">
+                </div>
+                <div class="form-group">
+                  <label for="embed-autor-icone">Ícone do Autor (URL)</label>
+                  <input type="text" id="embed-autor-icone" placeholder="https://...">
+                </div>
+              </div>
+
+              <div class="row-2">
+                <div class="form-group">
+                  <label for="embed-thumbnail">Miniatura / Thumbnail (URL)</label>
+                  <input type="text" id="embed-thumbnail" placeholder="https://...">
+                </div>
+                <div class="form-group">
+                  <label for="embed-imagem">Banner / Imagem Grande (URL)</label>
+                  <input type="text" id="embed-imagem" placeholder="https://...">
+                </div>
+              </div>
+
+              <div class="row-2">
+                <div class="form-group">
+                  <label for="embed-footer-texto">Texto do Rodapé</label>
+                  <input type="text" id="embed-footer-texto" placeholder="Ex: Equipe Oficial">
+                </div>
+                <div class="form-group">
+                  <label for="embed-footer-icone">Ícone do Rodapé (URL)</label>
+                  <input type="text" id="embed-footer-icone" placeholder="https://...">
+                </div>
+              </div>
+
+              <label class="checkbox-inline">
+                <input type="checkbox" id="embed-timestamp">
+                <span>Mostrar data e hora atual no rodapé</span>
+              </label>
+            </div>
+          </details>
+
+          <div class="fields-section">
+            <div class="fields-header">
+              <label>Campos Extras (Fields)</label>
+              <button type="button" id="add-field-btn" class="btn-secondary">+ Adicionar Campo</button>
+            </div>
+            <div id="fields-container"></div>
+          </div>
+        </div>
+
+        <button id="enviar-post-btn" class="btn-success btn-large">🚀 Postar no Discord</button>
+        <div id="envio-status"></div>
+      </div>
+
+      <!-- Pré-visualização -->
+      <div class="card preview-column">
+        <h3>Pré-visualização ao Vivo</h3>
+        <div class="discord-mock">
+          <div class="discord-msg-header">
+            <img id="preview-bot-avatar" src="https://cdn.discordapp.com/embed/avatars/0.png" alt="Avatar">
+            <div>
+              <span id="preview-bot-name" class="bot-name">Seu Bot</span>
+              <span class="bot-tag">APP</span>
+              <span class="msg-time">Hoje às 12:00</span>
+            </div>
+          </div>
+          
+          <div id="preview-content" class="discord-content"></div>
+
+          <div id="preview-embed" class="discord-embed" style="border-left-color: #5865F2;">
+            <div class="embed-inner">
+              <div class="embed-main">
+                <div id="preview-author" class="embed-author" style="display:none;">
+                  <img id="preview-author-icon" src="" alt="">
+                  <span id="preview-author-name"></span>
+                </div>
+                <div id="preview-title" class="embed-title">Título do Embed</div>
+                <div id="preview-description" class="embed-description">Sua descrição aparecerá aqui em tempo real...</div>
+                <div id="preview-fields" class="embed-fields"></div>
+              </div>
+              <img id="preview-thumbnail" class="embed-thumbnail" src="" alt="" style="display:none;">
+            </div>
+            <img id="preview-image" class="embed-image" src="" alt="" style="display:none;">
+            <div id="preview-footer" class="embed-footer" style="display:none;">
+              <img id="preview-footer-icon" src="" alt="" style="display:none;">
+              <span id="preview-footer-text"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
